@@ -1,286 +1,653 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import threading
+import sys
 import os
+import re
 import shutil
 import tempfile
 import winreg
 from datetime import datetime
-import re
-import browser_cookie3
+
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget,
+    QLabel, QLineEdit, QPushButton,
+    QTextEdit, QFileDialog, QMessageBox,
+    QProgressBar, QVBoxLayout, QHBoxLayout,
+    QCheckBox, QGroupBox, QComboBox
+)
+
 import yt_dlp
+import browser_cookie3
+import socket
 
-class YouTubeDownloaderApp:
-    def __init__(self, root):  
-        self.root = root
-        self.root.title("YouTube Downloader")
-        self.root.geometry("500x500")
-        self.root.resizable(False, False)
+try:
+    import dns.resolver
+    DNS_AVAILABLE = True
+except ImportError:
+    DNS_AVAILABLE = False
 
-        self.create_widgets()
-        self.position_widgets()
 
-        self.save_path = os.path.expanduser("~\\Videos")
-        self.cookies_loaded = False
-        self.ffmpeg_path = None
+# ================= ANSI CLEANER =================
 
-    def create_widgets(self):
-        self.url_frame = ttk.Frame(self.root)
-        self.url_label = ttk.Label(self.url_frame, text="YouTube URL:")
-        self.url_entry = ttk.Entry(self.url_frame, width=40)
+def strip_ansi(text: str) -> str:
+    ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+    return ansi_escape.sub('', text)
 
-        style = ttk.Style()
-        style.configure("White.TEntry", fieldbackground="white")
 
-        self.path_frame = ttk.Frame(self.root)
-        self.path_label = ttk.Label(self.path_frame, text="Output path:")
-        self.path_entry = tk.Entry(self.path_frame, width=40, state='readonly', bg='white', fg='black')
-        self.path_btn = ttk.Button(self.path_frame, text="Select output path", command=self.select_save_path)
+# ================= DOWNLOAD THREAD =================
 
-        self.log_text = tk.Text(
-            self.root,
-            height=15,
-            width=70,
-            state='disabled',
-            wrap='word',
-            font=("Segoe UI", 10)
-        )
-        self.log_scroll = ttk.Scrollbar(self.root, orient="vertical", command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=self.log_scroll.set)
-        self.log_text.tag_configure("error", foreground="red")
-        self.log_text.tag_configure("warning", foreground="orange")
+class DownloadWorker(QThread):
+    log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(float)
+    finished_signal = pyqtSignal(bool, str)
 
-        # Контейнер для прогрессбара с лейблом (лейбл ниже прогрессбара)
-        self.progress_container = ttk.Frame(self.root)
-        self.progress_bar = ttk.Progressbar(self.progress_container, mode="determinate", length=480)
-        self.progress_bar.pack(fill='x')
-        self.progress_label = tk.Label(self.progress_container, text="0%", anchor='center', font=("Segoe UI", 8, "bold"))
-        self.progress_label.pack(pady=(2, 0))
+    def __init__(self, url, save_path, use_minimal_bypass=False, browser_choice="auto", use_custom_dns=True):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.use_minimal_bypass = use_minimal_bypass
+        self.browser_choice = browser_choice
+        self.use_custom_dns = use_custom_dns
+        self._is_cancelled = False
 
-        self.download_btn = ttk.Button(self.root, text="Download", command=self.start_download)
-        self.help_btn = ttk.Button(self.root, text="?", width=3, command=self.show_help_info)
-
-    def position_widgets(self):
-        self.url_frame.grid(row=0, column=0, padx=10, pady=5, sticky='ew')
-        self.help_btn.grid(row=0, column=2, padx=5, pady=5, sticky='e')
-        self.url_label.pack(anchor='w', padx=5, pady=(5, 0))
-        self.url_entry.pack(fill='x', padx=5, pady=(0, 5))
-
-        self.path_frame.grid(row=1, column=0, padx=10, pady=5, sticky='ew', columnspan=2)
-        self.path_label.pack(anchor='w', padx=5, pady=(5, 0))
-        self.path_entry.pack(fill='x', padx=5, pady=(0, 5))
-        self.path_btn.pack(pady=(0, 10))
-
-        self.log_text.grid(row=2, column=0, padx=10, pady=10, sticky='nsew', columnspan=2)
-        self.log_scroll.grid(row=2, column=2, padx=0, pady=10, sticky='ns')
-
-        self.progress_container.grid(row=3, column=0, padx=10, pady=10, sticky='ew', columnspan=2)
-
-        self.download_btn.config(width=20)
-        self.download_btn.grid(row=4, column=0, padx=10, pady=10)
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_rowconfigure(2, weight=1)
+    def cancel(self):
+        """Cancel the download"""
+        self._is_cancelled = True
+        self.log("Cancelling download...")
 
     def log(self, message):
-        self.log_text.config(state='normal')
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.config(state='disabled')
-        self.log_text.see(tk.END)
-        self.root.update_idletasks()
-
-    def show_help_info(self):
-        help_text = (
-            "YouTube Downloader v0.5\n"
-            "Author: stakan\n\n"
-            "github.com/stakanyash"
-        )
-        messagebox.showinfo("About", help_text)
-
-    def select_save_path(self):
-        path = filedialog.askdirectory(title="Select Save Directory")
-        if path:
-            self.save_path = path
-            self.path_entry.config(state='normal')
-            self.path_entry.delete(0, tk.END)
-            self.path_entry.insert(0, path)
-            self.path_entry.config(state='readonly')
+        self.log_signal.emit(strip_ansi(message))
 
     def get_ffmpeg_location(self):
         self.log("Searching for ffmpeg...")
-        try:
-            ffmpeg_path = shutil.which('ffmpeg')
-            if ffmpeg_path:
-                self.log(f"Found in PATH: {ffmpeg_path}")
-                return ffmpeg_path
-        except Exception as e:
-            self.log(f"PATH search error: {str(e)}")
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            self.log(f"Found ffmpeg in PATH: {ffmpeg}")
+            return ffmpeg
 
         common_paths = [
-            os.path.join(os.getcwd(), 'ffmpeg', 'bin', 'ffmpeg.exe'),
-            os.path.expanduser('~\\ffmpeg\\bin\\ffmpeg.exe'),
-            'C:\\ffmpeg\\bin\\ffmpeg.exe',
-            'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
-            'C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe'
+            "C:\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe"
         ]
+
         for path in common_paths:
             if os.path.exists(path):
-                self.log(f"Found in default location: {path}")
+                self.log(f"Found ffmpeg: {path}")
                 return path
 
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\ffmpeg.exe"
+                r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\ffmpeg.exe"
             ) as key:
                 reg_path, _ = winreg.QueryValueEx(key, "")
                 if os.path.exists(reg_path):
-                    self.log(f"Found in registry: {reg_path}")
+                    self.log(f"Found ffmpeg in registry: {reg_path}")
                     return reg_path
-        except Exception as e:
-            self.log(f"Registry search failed: {str(e)}")
+        except:
+            pass
 
-        self.log("FFmpeg not found! Some functions may be limited.")
+        self.log("FFmpeg not found!")
         return None
 
     def progress_hook(self, d):
-        if d['status'] == 'downloading':
-            percent_str = d.get('_percent_str', '')
-            if percent_str:
+        if self._is_cancelled:
+            raise Exception("Download cancelled by user")
+            
+        if d["status"] == "downloading":
+            # Get download percentage
+            if "downloaded_bytes" in d and "total_bytes" in d:
+                percent = (d["downloaded_bytes"] / d["total_bytes"]) * 100
+                self.progress_signal.emit(percent)
+            elif "downloaded_bytes" in d and "total_bytes_estimate" in d:
+                percent = (d["downloaded_bytes"] / d["total_bytes_estimate"]) * 100
+                self.progress_signal.emit(percent)
+            elif "_percent_str" in d:
+                percent_str = d.get("_percent_str", "")
+                percent_str = re.sub(r"[^\d.]", "", percent_str)
+                if percent_str:
+                    try:
+                        self.progress_signal.emit(float(percent_str))
+                    except:
+                        pass
+
+        elif d["status"] == "finished":
+            self.progress_signal.emit(100.0)
+            self.log("Download finished. Merging...")
+            
+        elif d["status"] == "error":
+            self.log(f"Download error: {d.get('error', 'Unknown error')}")
+
+    def run(self):
+        cookies_file = None
+        original_getaddrinfo = None
+        
+        # Setup custom DNS to bypass ISP blocking
+        if self.use_custom_dns and DNS_AVAILABLE:
+            self.log("Setting up custom DNS (8.8.8.8, 1.1.1.1)...")
+            original_getaddrinfo = socket.getaddrinfo
+            
+            def custom_getaddrinfo(host, port, family=0, socktype=0, proto=0, flags=0):
+                """Use Google/Cloudflare DNS to bypass ISP blocking"""
+                if 'youtube.com' in host or 'googlevideo.com' in host or 'ytimg.com' in host:
+                    try:
+                        resolver = dns.resolver.Resolver()
+                        resolver.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4']  # Google and Cloudflare
+                        resolver.timeout = 5
+                        resolver.lifetime = 5
+                        
+                        # Try A record (IPv4)
+                        try:
+                            answers = resolver.resolve(host, 'A')
+                            ip = str(answers[0])
+                            self.log(f"DNS resolved: {host} -> {ip}")
+                            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port))]
+                        except:
+                            # If IPv4 fails, try IPv6
+                            try:
+                                answers = resolver.resolve(host, 'AAAA')
+                                ip = str(answers[0])
+                                self.log(f"DNS resolved (IPv6): {host} -> {ip}")
+                                return [(socket.AF_INET6, socket.SOCK_STREAM, 6, '', (ip, port, 0, 0))]
+                            except:
+                                pass
+                    except Exception as e:
+                        self.log(f"Custom DNS failed for {host}: {e}")
+                
+                # Fallback to system DNS
+                return original_getaddrinfo(host, port, family, socktype, proto, flags)
+            
+            socket.getaddrinfo = custom_getaddrinfo
+            self.log("Custom DNS enabled")
+        elif self.use_custom_dns and not DNS_AVAILABLE:
+            self.log("WARNING: dnspython not installed, custom DNS disabled")
+            self.log("Install: pip install dnspython")
+
+        try:
+            # Extract cookies
+            if self.browser_choice != "none":
+                self.log(f"Extracting cookies from {self.browser_choice}...")
                 try:
-                    ansi_clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', percent_str)
-                    cleaned_percent = re.sub(r'[^\d.]', '', ansi_clean).strip()
-                    percent = float(cleaned_percent)
+                    cookies = None
+                    
+                    if self.browser_choice == "auto":
+                        # Auto search in popular browsers
+                        browsers = [
+                            ('Chrome', lambda: browser_cookie3.chrome(domain_name="youtube.com")),
+                            ('Firefox', lambda: browser_cookie3.firefox(domain_name="youtube.com")),
+                            ('Edge', lambda: browser_cookie3.edge(domain_name="youtube.com")),
+                            ('Opera', lambda: browser_cookie3.opera(domain_name="youtube.com")),
+                            ('Brave', lambda: browser_cookie3.brave(domain_name="youtube.com")),
+                        ]
+                        
+                        for browser_name, browser_func in browsers:
+                            try:
+                                cookies = browser_func()
+                                self.log(f"✓ Cookies found in {browser_name}")
+                                break
+                            except:
+                                continue
+                                
+                        if not cookies:
+                            self.log("No cookies found in any browser")
+                    else:
+                        # Specific browser
+                        browser_functions = {
+                            'chrome': browser_cookie3.chrome,
+                            'firefox': browser_cookie3.firefox,
+                            'edge': browser_cookie3.edge,
+                            'opera': browser_cookie3.opera,
+                            'brave': browser_cookie3.brave,
+                            'chromium': browser_cookie3.chromium,
+                            'vivaldi': browser_cookie3.vivaldi,
+                        }
+                        
+                        if self.browser_choice in browser_functions:
+                            try:
+                                cookies = browser_functions[self.browser_choice](domain_name="youtube.com")
+                                self.log(f"✓ Cookies extracted from {self.browser_choice.title()}")
+                            except Exception as e:
+                                self.log(f"Failed to extract cookies from {self.browser_choice.title()}: {e}")
+                    
+                    if cookies:
+                        cookies_file = os.path.join(
+                            tempfile.gettempdir(), "yt_cookies.txt"
+                        )
 
-                    if percent > 0.0 and not getattr(self, '_progress_reported', False):
-                        self.log("Download started...")
-                        self._progress_reported = True
-
-                    self.progress_bar['value'] = percent
-                    self.progress_label.config(text=f"{percent:.1f}%")
+                        with open(cookies_file, "w", encoding="utf-8") as f:
+                            f.write("# Netscape HTTP Cookie File\n")
+                            for c in cookies:
+                                f.write("\t".join([
+                                    c.domain,
+                                    "TRUE" if c.domain.startswith(".") else "FALSE",
+                                    c.path,
+                                    "TRUE" if c.secure else "FALSE",
+                                    str(c.expires or 0),
+                                    c.name,
+                                    c.value
+                                ]) + "\n")
+                        self.log("Cookies saved successfully")
+                        
                 except Exception as e:
-                    self.log(f"WARNING: Couldn't parse progress: {str(e)}")
+                    self.log(f"Cookie extraction failed: {e}")
+                    cookies_file = None
+            else:
+                self.log("Skipping cookie extraction (disabled)")
 
-        elif d['status'] == 'finished':
-            if not getattr(self, '_merging_reported', False):
-                self.log("Download finished. Merging...")
-                self._merging_reported = True
+            ffmpeg = self.get_ffmpeg_location()
 
-            self.progress_bar['value'] = 100
-            self.progress_label.config(text="100%")
-
-    def _get_firefox_cookies_debug(self):
-        self.log("Extracting cookies from Firefox...")
-        try:
-            cookies = browser_cookie3.firefox(domain_name="youtube.com")
-            cookie_list = list(cookies)
-            self.log(f"Successfully loaded {len(cookie_list)} YouTube-related cookies")
-            return cookie_list
-        except Exception as e:
-            self.log(f"Error extracting Firefox cookies: {str(e)}")
-            return []
-
-    def download_video(self, url):
-        try:
-            self._progress_reported = False
-            self._merging_reported = False
-            self.progress_bar['value'] = 0
-            self.progress_label.config(text="0%")
-            self.ffmpeg_path = self.get_ffmpeg_location()
-
-            firefox_cookies = self._get_firefox_cookies_debug()
-            if not firefox_cookies:
-                messagebox.showerror("Error", "Failed to load cookies from Firefox")
-                return
-
-            cookies_file = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
-            self.write_cookies_to_file(firefox_cookies, cookies_file)
-
+            # Base yt-dlp options
             ydl_opts = {
-                'format': 'bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080]',
-                'outtmpl': os.path.join(self.save_path, '%(title)s.%(ext)s'),
-                'progress_hooks': [self.progress_hook],
-                'cookiefile': cookies_file,
-                'noplaylist': True,
-                'merge_output_format': 'mp4',
-                'retries': 10,
-                'fragment_retries': 10,
-                'ffmpeg_location': self.ffmpeg_path,
-                'postprocessor_args': ['-threads', '4'],
+                "format": "bestvideo[height<=1080]+bestaudio/best",
+                "outtmpl": os.path.join(
+                    self.save_path, "%(title)s.%(ext)s"
+                ),
+                "progress_hooks": [self.progress_hook],
+                "merge_output_format": "mp4",
+                "retries": 30,
+                "fragment_retries": 30,
+                "ffmpeg_location": ffmpeg,
+                "quiet": False,
+                "no_warnings": False,
+                "ignoreerrors": False,
+                "lazy_extractors": False,
+                # Increased timeouts to bypass DPI
+                "socket_timeout": 60,
+                "http_chunk_size": 10485760,  # 10MB chunks
             }
 
-            if not self.ffmpeg_path:
-                self.log("Warning: FFmpeg not found - limited format support")
+            # Add minimal bypass if enabled
+            if self.use_minimal_bypass:
+                self.log("Using minimal bypass (custom headers)")
+                ydl_opts["http_headers"] = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-us,en;q=0.5",
+                }
+            else:
+                self.log("Using standard download mode")
 
-            self.log("Starting download process...")
+            # Add cookies
+            if cookies_file:
+                ydl_opts["cookiefile"] = cookies_file
+                self.log("Using browser cookies for authentication")
+
+            if not ffmpeg:
+                self.log("Warning: FFmpeg not found (limited formats)")
+
+            self.log("Starting download...")
+            self.log(f"URL: {self.url}")
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+                # First get video info
+                self.log("Fetching video information...")
+                info = ydl.extract_info(self.url, download=False)
+                
+                if self._is_cancelled:
+                    self.finished_signal.emit(False, "Download cancelled by user")
+                    return
+                    
+                self.log(f"✓ Video: {info.get('title', 'Unknown')}")
+                self.log(f"✓ Duration: {info.get('duration', 0)} sec")
+                self.log(f"✓ Uploader: {info.get('uploader', 'Unknown')}")
+                
+                # Then download
+                self.log("Starting download...")
+                ydl.download([self.url])
 
-            self.log("Download completed successfully!")
-            messagebox.showinfo("Success", "Download completed!")
-
-            if os.path.exists(cookies_file):
-                try:
-                    os.remove(cookies_file)
-                    self.log(f"Temporary cookies file {cookies_file} deleted.")
-                except Exception as e:
-                    self.log(f"Warning: Failed to delete cookies file: {e}")
+            if self._is_cancelled:
+                self.finished_signal.emit(False, "Download cancelled by user")
+            else:
+                self.finished_signal.emit(True, "Download completed successfully!")
 
         except Exception as e:
-            error_msg = str(e)
-            if "ffmpeg" in error_msg.lower():
-                error_msg += "\nPlease install FFmpeg and add it to PATH or program directory"
-            self.log(f"ERROR: {error_msg}")
-            messagebox.showerror("Error", error_msg)
+            if self._is_cancelled or "cancelled by user" in str(e).lower():
+                self.finished_signal.emit(False, "Download cancelled by user")
+            else:
+                error_text = strip_ansi(str(e))
+                
+                # Analyze error
+                if "403" in error_text or "Forbidden" in error_text:
+                    suggestion = (
+                        "\n\nLooks like ISP blocking:\n"
+                        "1. Try different bypass method\n"
+                        "2. Make sure GoodbyeDPI/Zapret is running\n"
+                        "3. Check if video opens in browser\n"
+                        "4. Try updating yt-dlp: pip install -U yt-dlp"
+                    )
+                    self.log(f"ERROR: {error_text}{suggestion}")
+                    self.finished_signal.emit(False, error_text + suggestion)
+                else:
+                    self.log(f"ERROR: {error_text}")
+                    self.finished_signal.emit(False, error_text)
 
         finally:
-            self.progress_bar['value'] = 0
-            self.progress_label.config(text="0%")
-            self._download_started = False
+            # Restore original DNS
+            if original_getaddrinfo:
+                socket.getaddrinfo = original_getaddrinfo
+                self.log("Restored original DNS")
+            
+            if cookies_file and os.path.exists(cookies_file):
+                try:
+                    os.remove(cookies_file)
+                except:
+                    pass
 
-    def write_cookies_to_file(self, cookies, filename):
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write("# Netscape HTTP Cookie File\n")
-                for cookie in cookies:
-                    domain = cookie.domain
-                    flag = "TRUE" if domain.startswith('.') else "FALSE"
-                    path = cookie.path
-                    secure = "TRUE" if cookie.secure else "FALSE"
-                    expires = str(cookie.expires) if cookie.expires else '0'
-                    name = cookie.name
-                    value = cookie.value
-                    f.write("\t".join([
-                        domain,
-                        flag,
-                        path,
-                        secure,
-                        expires,
-                        name,
-                        value
-                    ]) + "\n")
-            self.log(f"Cookies saved to {filename}")
-        except Exception as e:
-            self.log(f"Error saving cookies: {str(e)}")
+
+# ================= MAIN WINDOW =================
+
+class YouTubeDownloader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("YouTube Downloader")
+        self.setFixedSize(540, 640)
+
+        self.save_path = os.path.join(os.path.expanduser("~"), "Videos")
+        self.worker = None
+
+        self.init_ui()
+        self.apply_dark_theme()
+
+    def init_ui(self):
+        central = QWidget(self)
+        self.setCentralWidget(central)
+
+        # URL input
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("YouTube URL")
+
+        # Path selection
+        self.path_edit = QLineEdit(self.save_path)
+        self.path_edit.setReadOnly(True)
+
+        path_btn = QPushButton("Select output path")
+        path_btn.clicked.connect(self.select_path)
+
+        # Browser cookies group
+        cookies_group = QGroupBox("Browser Cookies")
+        cookies_layout = QVBoxLayout()
+        
+        self.browser_combo = QComboBox()
+        self.browser_combo.addItems([
+            "Auto (search all)",
+            "Don't use",
+            "Chrome",
+            "Firefox", 
+            "Edge",
+            "Opera",
+            "Brave",
+            "Chromium",
+            "Vivaldi"
+        ])
+        
+        cookies_help = QLabel(
+            "Helps with private and age-restricted videos.\n"
+            "Select the browser where you're logged into YouTube."
+        )
+        cookies_help.setWordWrap(True)
+        cookies_help.setStyleSheet("color: #888; font-size: 10px;")
+        
+        cookies_layout.addWidget(self.browser_combo)
+        cookies_layout.addWidget(cookies_help)
+        cookies_group.setLayout(cookies_layout)
+
+        # Bypass settings
+        self.use_bypass_check = QCheckBox("Use minimal bypass (custom headers)")
+        self.use_bypass_check.setChecked(False)
+        self.use_bypass_check.setToolTip("Adds browser headers to bypass blocking")
+
+        # DNS settings
+        self.use_dns_check = QCheckBox("Use alternative DNS (8.8.8.8)")
+        self.use_dns_check.setChecked(True)
+        self.use_dns_check.setToolTip("Bypass ISP DNS blocking")
+        
+        if not DNS_AVAILABLE:
+            self.use_dns_check.setEnabled(False)
+            self.use_dns_check.setText("❌ DNS unavailable (install: pip install dnspython)")
+            self.use_dns_check.setStyleSheet("color: #ff6b6b;")
+
+        # Log box
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+
+        # Buttons
+        self.download_btn = QPushButton("Download")
+        self.download_btn.clicked.connect(self.toggle_download)
+
+        help_btn = QPushButton("?")
+        help_btn.setFixedWidth(30)
+        help_btn.clicked.connect(self.show_about)
+
+        # Layout
+        top = QHBoxLayout()
+        top.addWidget(QLabel("YouTube URL:"))
+        top.addStretch()
+        top.addWidget(help_btn)
+
+        layout = QVBoxLayout(central)
+        layout.addLayout(top)
+        layout.addWidget(self.url_edit)
+        layout.addWidget(QLabel("Output path:"))
+        layout.addWidget(self.path_edit)
+        layout.addWidget(path_btn)
+        layout.addWidget(cookies_group)
+        layout.addWidget(self.use_bypass_check)
+        layout.addWidget(self.use_dns_check)
+        layout.addWidget(self.log_box)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.download_btn)
+
+    def apply_dark_theme(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                font-family: Segoe UI;
+            }
+            QLineEdit, QTextEdit {
+                background-color: #1e1e1e;
+                border: 1px solid #404040;
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QComboBox {
+                background-color: #1e1e1e;
+                border: 1px solid #404040;
+                padding: 6px;
+                border-radius: 4px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #ffffff;
+                margin-right: 8px;
+            }
+            QPushButton {
+                background-color: #404040;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+            }
+            QPushButton:disabled {
+                background-color: #2b2b2b;
+                color: #666666;
+            }
+            QProgressBar {
+                border: 1px solid #404040;
+                text-align: center;
+                height: 18px;
+                border-radius: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #0078d7;
+                border-radius: 3px;
+            }
+            QGroupBox {
+                border: 1px solid #404040;
+                border-radius: 6px;
+                margin-top: 12px;
+                padding-top: 12px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QCheckBox {
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 1px solid #404040;
+                border-radius: 3px;
+                background-color: #1e1e1e;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #0078d7;
+            }
+        """)
+
+    def log(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_box.append(f"[{timestamp}] {message}")
+
+    def select_path(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Save Directory"
+        )
+        if path:
+            self.save_path = path
+            self.path_edit.setText(path)
+
+    def toggle_download(self):
+        if self.worker and self.worker.isRunning():
+            # Cancel download
+            self.worker.cancel()
+            self.download_btn.setEnabled(False)
+            self.download_btn.setText("Cancelling...")
+        else:
+            # Start download
+            self.start_download()
 
     def start_download(self):
-        url = self.url_entry.get().strip()
+        url = self.url_edit.text().strip()
         if not url:
-            messagebox.showwarning("Input Error", "Please enter a valid URL")
+            QMessageBox.warning(self, "Error", "Please enter YouTube URL")
             return
+
+        self.log_box.clear()
+        self.progress_bar.setValue(0)
+
+        use_minimal_bypass = self.use_bypass_check.isChecked()
+        use_custom_dns = self.use_dns_check.isChecked()
         
-        self.progress_bar['value'] = 0
-        self.progress_label.config(text="0%")
-        self._download_started = False
+        # Determine browser for cookies
+        browser_map = {
+            0: "auto",
+            1: "none",
+            2: "chrome",
+            3: "firefox",
+            4: "edge",
+            5: "opera",
+            6: "brave",
+            7: "chromium",
+            8: "vivaldi"
+        }
+        browser_choice = browser_map[self.browser_combo.currentIndex()]
 
-        self.log_text.config(state='normal')
-        self.log_text.delete(1.0, tk.END)
-        self.log_text.config(state='disabled')
+        self.worker = DownloadWorker(url, self.save_path, use_minimal_bypass, browser_choice, use_custom_dns)
+        self.worker.log_signal.connect(self.log)
+        self.worker.progress_signal.connect(
+            lambda v: self.progress_bar.setValue(int(v))
+        )
+        self.worker.finished_signal.connect(self.download_finished)
+        self.worker.start()
+        
+        # Change button to cancel mode
+        self.download_btn.setText("Cancel")
+        self.download_btn.setStyleSheet("QPushButton { background-color: #d7000f; } QPushButton:hover { background-color: #ff0000; }")
 
-        thread = threading.Thread(target=self.download_video, args=(url,), daemon=True)
-        thread.start()
+    def download_finished(self, success, message):
+        # Reset button to download mode
+        self.download_btn.setText("Download")
+        self.download_btn.setEnabled(True)
+        self.download_btn.setStyleSheet("")
+        
+        # Reset progress bar
+        self.progress_bar.setValue(0)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            if "cancelled" in message.lower():
+                QMessageBox.information(self, "Cancelled", message)
+            else:
+                QMessageBox.critical(self, "Error", message)
+
+    def show_about(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About")
+        msg.setTextFormat(Qt.RichText)
+        
+        # Apply dark theme to message box
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+                background-color: #2b2b2b;
+            }
+            QPushButton {
+                background-color: #404040;
+                color: #ffffff;
+                padding: 6px 16px;
+                border-radius: 4px;
+                min-width: 60px;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+            }
+        """)
+        
+        # Use inline styles for links to ensure they work
+        link_style = "color: #58a6ff; text-decoration: none;"
+        
+        msg.setText(
+            "<h3>YouTube Downloader v1.0</h3>"
+            f"<p><b>Author:</b> stakan<br>"
+            f"<a href='https://github.com/stakanyash' style='{link_style}'>github.com/stakanyash</a></p>"
+            f"<p><b>Built with:</b><br>"
+            f"• <a href='https://www.python.org/' style='{link_style}'>Python</a><br>"
+            f"• <a href='https://riverbankcomputing.com/software/pyqt/' style='{link_style}'>PyQt5</a><br>"
+            f"• <a href='https://github.com/yt-dlp/yt-dlp' style='{link_style}'>yt-dlp</a><br>"
+            f"• <a href='https://github.com/borisbabic/browser_cookie3' style='{link_style}'>browser-cookie3</a><br>"
+            f"• <a href='https://github.com/rthalley/dnspython' style='{link_style}'>dnspython</a></p>"
+            f"<p><b>Requirements:</b><br>"
+            f"• <a href='https://ffmpeg.org/download.html' style='{link_style}'>FFmpeg</a> must be in system PATH</p>"
+        )
+        msg.exec_()
+
+
+# ================= ENTRY POINT =================
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = YouTubeDownloaderApp(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    window = YouTubeDownloader()
+    window.show()
+    sys.exit(app.exec_())
