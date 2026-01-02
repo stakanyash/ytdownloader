@@ -117,3 +117,4 @@ yt_downloader.dist/yt_downloader.dll
 yt_downloader.dist/zstandard/_cffi.pyd
 yt_downloader.dist/zstandard/backend_c.pyd
 *.exe
+/src/__pycache__
