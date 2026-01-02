@@ -1,0 +1,4 @@
+PyQt5>=5.15.11
+yt-dlp>=2025.12.8
+browser-cookie3>=0.20.1
+dnspython>=2.8.0
