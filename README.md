@@ -26,6 +26,15 @@ pip install PyQt5 yt-dlp browser-cookie3 dnspython
 
 ## Installation
 
+### Option 1: Download Pre-built Executable (Windows)
+
+Download the latest release from the [Releases](https://github.com/stakanyash/ytdownloader/releases) page.
+
+> [!WARNING]
+> The executable compiled with Nuitka may trigger false positives in some antivirus software. This is a common issue with Python applications compiled to .exe files. The application does not contain any malicious code - it only downloads videos using yt-dlp and accesses browser cookies for authentication. If your antivirus flags the file, you may need to add it to your exceptions list. I'm apologize for any inconvenience.
+
+### Option 2: Run from Source
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/stakanyash/ytdownloader.git
