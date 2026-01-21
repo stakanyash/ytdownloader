@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
     QTextEdit, QFileDialog, QMessageBox, QProgressBar,
     QVBoxLayout, QHBoxLayout, QCheckBox, QGroupBox,
-    QComboBox, QListWidget
+    QComboBox, QListWidget, QRadioButton, QButtonGroup
 )
 
 from utils import AppContext
@@ -22,7 +22,7 @@ class YouTubeDownloader(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("YouTube Downloader")
-        self.setFixedSize(700, 740)
+        self.setFixedSize(700, 800)  # Увеличили высоту
 
         self.save_path = os.path.join(os.path.expanduser("~"), "Videos")
         self.worker = None
@@ -84,6 +84,24 @@ class YouTubeDownloader(QMainWindow):
         path_btn = QPushButton("Select output path")
         path_btn.clicked.connect(self.select_path)
 
+        # Группа для выбора формата (видео/аудио)
+        format_group = QGroupBox("Download Format")
+        format_layout = QVBoxLayout()
+        
+        self.format_button_group = QButtonGroup()
+        
+        self.video_radio = QRadioButton("Video (MP4, best quality up to 1080p)")
+        self.audio_radio = QRadioButton("Audio Only (MP3, best quality)")
+        
+        self.video_radio.setChecked(True)
+        
+        self.format_button_group.addButton(self.video_radio)
+        self.format_button_group.addButton(self.audio_radio)
+        
+        format_layout.addWidget(self.video_radio)
+        format_layout.addWidget(self.audio_radio)
+        format_group.setLayout(format_layout)
+
         cookies_group = QGroupBox("Browser Cookies")
         cookies_layout = QVBoxLayout()
         
@@ -136,6 +154,7 @@ class YouTubeDownloader(QMainWindow):
         layout.addWidget(QLabel("Output path:"))
         layout.addWidget(self.path_edit)
         layout.addWidget(path_btn)
+        layout.addWidget(format_group)  # Добавили группу выбора формата
         layout.addWidget(cookies_group)
         layout.addWidget(self.use_bypass_check)
         layout.addWidget(self.use_dns_check)
@@ -204,15 +223,63 @@ class YouTubeDownloader(QMainWindow):
                 padding-top: 12px;
                 font-weight: bold;
             }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                color: #ffffff;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #ffffff;
+            }
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
-                border: 1px solid #404040;
+                border: 2px solid #404040;
                 border-radius: 3px;
                 background-color: #1e1e1e;
             }
+            QCheckBox::indicator:hover {
+                border: 2px solid #0078d7;
+            }
             QCheckBox::indicator:checked {
                 background-color: #0078d7;
+                border: 2px solid #0078d7;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTAiIHZpZXdCb3g9IjAgMCAxMiAxMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMSA1TDQgOEwxMSAxIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIGZpbGw9Im5vbmUiLz48L3N2Zz4=);
+            }
+            QRadioButton {
+                spacing: 8px;
+                color: #ffffff;
+                padding: 4px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #505050;
+                border-radius: 10px;
+                background-color: #1e1e1e;
+            }
+            QRadioButton::indicator:hover {
+                border: 2px solid #0078d7;
+                background-color: #2a2a2a;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #0078d7;
+                background-color: #1e1e1e;
+            }
+            QRadioButton::indicator:checked::after {
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background-color: #0078d7;
+            }
+            QRadioButton:disabled {
+                color: #666666;
+            }
+            QRadioButton::indicator:disabled {
+                border: 2px solid #333333;
+                background-color: #1a1a1a;
             }
         """)
 
@@ -286,11 +353,18 @@ class YouTubeDownloader(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
+            # Определяем фильтр файлов в зависимости от ОС
+            import platform
+            if platform.system() == "Windows":
+                file_filter = "Executable Files (*.exe);;All Files (*.*)"
+            else:
+                file_filter = "All Files (*)"
+            
             file_path, _ = QFileDialog.getOpenFileName(
                 self, 
                 "Select FFmpeg Executable",
-                "",
-                "Executable Files (*.exe);;All Files (*.*)"
+                "/usr/bin" if platform.system() == "Linux" else "",
+                file_filter
             )
             
             if file_path and os.path.exists(file_path):
@@ -323,6 +397,13 @@ class YouTubeDownloader(QMainWindow):
         self.log_box.clear()
         self.log(f"Starting queue download: {len(self.queue)} videos")
         
+        # Определяем формат
+        download_audio_only = self.audio_radio.isChecked()
+        if download_audio_only:
+            self.log("Format: Audio Only (MP3)")
+        else:
+            self.log("Format: Video (MP4, up to 1080p)")
+        
         browser_map = {
             0: "auto", 1: "none", 2: "chrome", 3: "firefox",
             4: "edge", 5: "opera", 6: "brave", 7: "chromium", 8: "vivaldi"
@@ -334,6 +415,8 @@ class YouTubeDownloader(QMainWindow):
         self.remove_btn.setEnabled(False)
         self.clear_btn.setEnabled(False)
         self.url_edit.setEnabled(False)
+        self.video_radio.setEnabled(False)
+        self.audio_radio.setEnabled(False)
         
         self.download_btn.setText("Cancel Queue")
         self.download_btn.setStyleSheet(
@@ -358,10 +441,14 @@ class YouTubeDownloader(QMainWindow):
         self.current_label.setText(f"Current: {url[:60]}...")
         self.progress_bar.setValue(0)
 
+        # Передаём информацию о формате в конфигурацию
+        download_audio_only = self.audio_radio.isChecked()
+        
         config = YtDlpConfig(
             save_path=self.save_path,
             use_minimal_bypass=self.use_bypass_check.isChecked(),
-            cookies_file=self.cookies_file
+            cookies_file=self.cookies_file,
+            audio_only=download_audio_only  # Новый параметр
         )
 
         self.worker = DownloadWorker(url, config, self.use_dns_check.isChecked())
@@ -416,6 +503,8 @@ class YouTubeDownloader(QMainWindow):
         self.remove_btn.setEnabled(True)
         self.clear_btn.setEnabled(True)
         self.url_edit.setEnabled(True)
+        self.video_radio.setEnabled(True)
+        self.audio_radio.setEnabled(True)
         
         self.download_btn.setStyleSheet("")
         self.update_queue_count()
@@ -455,7 +544,7 @@ class YouTubeDownloader(QMainWindow):
         link_style = "color: #58a6ff; text-decoration: none;"
         
         msg.setText(
-            "<h3>YouTube Downloader v1.1</h3>"
+            "<h3>YouTube Downloader v1.2</h3>"
             f"<p><b>Author:</b> stakan<br>"
             f"<a href='https://github.com/stakanyash' style='{link_style}'>github.com/stakanyash</a></p>"
             f"<p><b>Built with:</b><br>"
