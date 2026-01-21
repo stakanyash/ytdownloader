@@ -4,13 +4,15 @@ Desktop application for downloading YT videos with queue support and ISP blockin
 
 ## Features
 
+- **Cross-Platform**: Works on Windows and Linux
 - **Queue Management**: Add multiple videos and download them sequentially
 - **Browser Cookies**: Automatically extract cookies from browsers for private/age-restricted videos
-- **ISP Blocking Bypass**: 
+- **Network Block Bypass**: 
   - Custom DNS resolver (Google DNS 8.8.8.8, Cloudflare 1.1.1.1)
   - Custom HTTP headers
 - **High Quality**: Downloads best quality up to 1080p with audio merge
 - **Dark Theme UI**: Modern, easy-on-the-eyes interface
+
 
 ## Requirements
 
@@ -21,8 +23,9 @@ pip install PyQt5 yt-dlp browser-cookie3 dnspython
 
 ### External Tools
 - **FFmpeg** (required for video merging)
-  - Windows: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
+  - **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html)
   - Add to system PATH or select manually in the app
+  - **Linux:** `sudo apt install ffmpeg` in terminal
 
 ## Installation
 
@@ -67,24 +70,6 @@ python ./src/main.py
 ![Queue](assets/queueadded.png)
 ![Downloading](assets/downloading.png)
 ![Download finished](assets/finished.png)
-
-## Troubleshooting
-
-### FFmpeg Not Found
-- The app will prompt you to select FFmpeg manually if not found
-- Download from [ffmpeg.org](https://ffmpeg.org/download.html)
-- Extract and select `ffmpeg.exe` when prompted
-
-### 403 Forbidden Errors
-1. Enable "Use alternative DNS"
-2. Try different browser for cookies
-3. Use external tools like GoodbyeDPI or Zapret
-4. Check if video opens in browser
-
-### Cookie Extraction Failed
-- Make sure you're logged in to YouTube in the selected browser
-- Try "Auto (search all)" option
-- Close the browser and try again
 
 ## Supported Browsers
 
