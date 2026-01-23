@@ -1,0 +1,1 @@
+python3 -m nuitka --onefile main.py --include-module=ui --include-module=utils --include-module=cookie_manager --include-module=dns_resolver --include-module=ytdlp_config --include-module=download_worker --include-module=download_queue --nofollow-import-to=yt_dlp.extractor.lazy_extractors --enable-plugin=pyqt5 --lto=no
